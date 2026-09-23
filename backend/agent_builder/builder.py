@@ -16,7 +16,54 @@ from typing import Union
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
+import catalog
 from .schema import AgentConfig, Edge, Node
+from .validation import validate_config
+
+# The real Phase 2 query layer, exposed to `catalog_call` nodes by name. Every
+# function here is read-only and already verified against the real catalog.json
+# (see backend/catalog.py) — the LLM never sees the catalog itself, only what
+# one of these calls returns.
+CATALOG_FUNCTIONS = {
+    "resolve_provider_name": catalog.resolve_provider_name,
+    "resolve_location": catalog.resolve_location,
+    "find_providers": catalog.find_providers,
+    "find_appointment_types": catalog.find_appointment_types,
+    "list_specialties": catalog.list_specialties,
+    "verify_booking": catalog.verify_booking,
+}
+
+
+def _run_catalog_call(catalog_call: dict, collected: dict, state: dict) -> dict:
+    """Call a real catalog.py function for a `catalog_call` node.
+
+    `args` maps the function's own parameter names to the state key that holds
+    the value — checked in this turn's freshly collected fields first, then in
+    everything accumulated from earlier turns.
+    """
+    fn_name = catalog_call.get("function")
+    fn = CATALOG_FUNCTIONS.get(fn_name)
+    if fn is None:
+        return {"error": f"unknown catalog function '{fn_name}'"}
+
+    kwargs = {}
+    for param, state_key in catalog_call.get("args", {}).items():
+        if state_key in collected:
+            kwargs[param] = collected[state_key]
+        elif state_key in state:
+            kwargs[param] = state[state_key]
+
+    try:
+        output = fn(**kwargs)
+    except Exception as e:  # missing/invalid args, unknown ids, ... — never crash the call
+        logger.warning(f"catalog_call {fn_name}({kwargs}) failed: {e}")
+        return {"error": str(e)}
+
+    if isinstance(output, list):
+        return {"candidates": output, "candidate_count": len(output)}
+    if isinstance(output, dict):
+        return output
+    return {"result": output}
 
 
 class AgentBuilder:
@@ -39,20 +86,11 @@ class AgentBuilder:
 
     # ---- validation --------------------------------------------------------
     def _validate(self) -> None:
-        names = set(self._nodes_by_name)
-        if not names:
-            raise ValueError("Agent has no nodes.")
-        if self.config.initial_node not in names:
+        errors = [i for i in validate_config(self.config) if i.severity == "error"]
+        if errors:
             raise ValueError(
-                f"initial_node '{self.config.initial_node}' is not a defined node."
+                "; ".join(f"{i.node}: {i.message}" if i.node else i.message for i in errors)
             )
-        for node in self.config.nodes:
-            for edge in node.edges:
-                if edge.target not in names:
-                    raise ValueError(
-                        f"Edge '{edge.function}' in node '{node.name}' targets "
-                        f"unknown node '{edge.target}'."
-                    )
 
     # ---- compilation -------------------------------------------------------
     def build_initial_node(self) -> NodeConfig:
@@ -64,7 +102,7 @@ class AgentBuilder:
             "name": node.name,
             "role_message": node.role_message or self.config.persona,
             "task_messages": node.task_messages,
-            "functions": [self._make_edge_function(edge) for edge in node.edges],
+            "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }
         if node.pre_actions:
             node_config["pre_actions"] = node.pre_actions
@@ -75,13 +113,17 @@ class AgentBuilder:
             node_config["post_actions"] = [{"type": "end_conversation"}]
         return node_config
 
-    def _make_edge_function(self, edge: Edge) -> FlowsFunctionSchema:
+    def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
             # Persist what the caller gave us so later nodes can use it.
-            flow_manager.state.update(args)
-            logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
+            result = dict(args)
+            if node.type == "tool_call" and node.catalog_call:
+                # Real Phase 2 lookup: call the actual catalog.py function.
+                result.update(_run_catalog_call(node.catalog_call, result, flow_manager.state))
+            flow_manager.state.update(result)
+            logger.info(f"[{edge.function}] -> {edge.target} | collected: {result}")
             next_node = self._make_node(self._nodes_by_name[edge.target])
-            return {"status": "success", **args}, next_node
+            return {"status": "success", **result}, next_node
 
         return FlowsFunctionSchema(
             name=edge.function,

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voice Agent Builder</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div id="brand">Voice Agent Builder</div>
+  </header>
+
+  <main id="view-list">
+    <div class="list-header">
+      <h1>Agents</h1>
+      <div class="new-agent-controls">
+        <select id="template-select"></select>
+        <button id="btn-new-agent">New agent</button>
+      </div>
+    </div>
+    <ul id="agent-list"></ul>
+  </main>
+
+  <main id="view-editor" class="hidden">
+    <div id="editor-toolbar">
+      <button id="btn-back" title="Back to agent list">&larr; Agents</button>
+      <input id="agent-name-input" type="text" placeholder="Agent name" />
+      <div class="spacer"></div>
+      <span id="save-status"></span>
+      <button id="btn-add-node">+ Node</button>
+      <button id="btn-save" class="primary">Save</button>
+    </div>
+
+    <div id="editor-body">
+      <div id="canvas-wrap">
+        <div id="canvas-viewport">
+          <div id="canvas-content">
+            <svg id="edge-layer" width="4000" height="3000"></svg>
+          </div>
+        </div>
+        <div id="validation-banner" class="hidden"></div>
+        <div id="canvas-hint">Drag from a node's right-hand dot to another node to connect them. Scroll to zoom, drag the background to pan.</div>
+      </div>
+
+      <aside id="inspector">
+        <div id="inspector-empty">Select a node to edit it.</div>
+        <div id="inspector-form" class="hidden"></div>
+      </aside>
+    </div>
+
+    <div id="testcall-bar">
+      <button id="btn-call">Start test call</button>
+      <span id="call-status">Idle</span>
+      <audio id="remote-audio" autoplay></audio>
+    </div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

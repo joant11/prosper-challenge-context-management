@@ -7,12 +7,34 @@
 # `target`) rather than as Python closures — because a Copilot can emit a string, not
 # a callable. `AgentBuilder` turns these strings back into the closures Pipecat wants.
 #
+# `type`, `data_refs` and `catalog_call` are Phase 1 additions with Phase 2 in mind:
+# `type` is a pure UI/authoring hint (AgentBuilder ignores it — the graph still compiles
+# from `edges`/`end` alone), `data_refs` is an unused-for-now slot for structured catalog
+# references, and `catalog_call` lets a `tool_call` node call a real backend.catalog
+# function, merging its result into the conversation state.
+#
 
 from dataclasses import dataclass, field
 from typing import Optional
 
 DEFAULT_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # ElevenLabs "Rachel"
 DEFAULT_MODEL = "gpt-4o"
+
+# UI-facing node kinds. Purely descriptive: AgentBuilder compiles every node the
+# same way regardless of `type`, so adding a kind here never requires a builder change.
+NODE_TYPES = ("message", "collect", "decision", "tool_call", "end")
+
+
+def _infer_node_type(d: dict) -> str:
+    """Best-effort `type` for nodes saved before this field existed (e.g. example_flow.json)."""
+    if d.get("end"):
+        return "end"
+    edges = d.get("edges", [])
+    if len(edges) > 1:
+        return "decision"
+    if len(edges) == 1 and (edges[0].get("properties") or edges[0].get("required")):
+        return "collect"
+    return "message"
 
 
 @dataclass
@@ -48,6 +70,13 @@ class Node:
     pre_actions: list = field(default_factory=list)
     post_actions: list = field(default_factory=list)
     end: bool = False                                   # terminal -> ends the call
+    type: str = "message"                                # UI hint only; see NODE_TYPES
+    data_refs: dict = field(default_factory=dict)        # reserved for Phase 2 catalog refs
+    # Real Phase 2 lookup: {"function": "<catalog.py function name>", "args": {<function
+    # param name>: <state key to read the value from>}}. When set on a tool_call node,
+    # AgentBuilder calls the real function and merges its result into the state.
+    catalog_call: dict = field(default_factory=dict)
+    position: dict = field(default_factory=dict)         # {"x", "y"} canvas layout, UI only
 
     @classmethod
     def from_dict(cls, d: dict) -> "Node":
@@ -59,6 +88,10 @@ class Node:
             pre_actions=d.get("pre_actions", []),
             post_actions=d.get("post_actions", []),
             end=d.get("end", False),
+            type=d.get("type") or _infer_node_type(d),
+            data_refs=d.get("data_refs", {}),
+            catalog_call=d.get("catalog_call", {}),
+            position=d.get("position", {}),
         )
 
 

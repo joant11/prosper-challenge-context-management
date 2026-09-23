@@ -25,6 +25,9 @@ node_modules/
 dist/
 *.log
 
+# ---- Runtime data ----
+backend/data/agents/
+
 # ---- OS / editor ----
 .DS_Store
 Thumbs.db
