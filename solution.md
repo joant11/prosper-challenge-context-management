@@ -41,7 +41,7 @@ real function instead (`mock_response` has since been removed entirely — every
 | Plain string-similarity fuzzy matching (stdlib `difflib`) for provider/location names, not semantic search | Matching spoken/misspelled names against a small known list is a string-similarity problem, not a meaning-similarity one — cheaper, more predictable, and needs no new dependency. |
 | Ambiguous or low-confidence matches return candidates, never a silent guess | A wrong-but-confident booking is a worse outcome than one extra clarifying question — this is the core accuracy argument the whole design rests on. `resolve_location`/`resolve_provider_name` return a ranked candidate list; the calling node, not the matcher, decides what to do with ambiguity. |
 | Structured filter queries (`find_providers`, `find_appointment_types`) refuse to return an oversized result rather than truncate it silently | Unlike the fuzzy matchers, these have no relevance ranking — truncating to N rows could silently drop the correct one. Past `MAX_RESULTS` (8), the function raises `TooManyResultsError` with a concrete narrowing suggestion (e.g. location) instead of guessing which rows matter. This wasn't hypothetical: `find_providers(specialty="Internal Medicine")` already returns 10 rows on the real, present-day catalog. |
-| Known filters are combined into one query up front, not applied as two separate calls reconciled afterwards | When a caller gives both a name and a specialty, `resolve_provider_name` accepts `specialty` (and `location_id`) as optional pre-filters, applied *before* fuzzy scoring — one query instead of two. This isn't just an optimization: two independently-capped queries reconciled by an LLM afterwards can silently drop a valid answer that only survives in one of them (see the worked example below — a real bug this project shipped, then caught and fixed, not a hypothetical). Combining filters up front makes that class of bug structurally impossible instead of prompting the model to trust one source over another. |
+| Known filters are combined into one query up front, not applied as two separate calls reconciled afterwards | When a caller gives both a name and a specialty, `resolve_provider_name` accepts `specialty` (and `location_id`) as optional pre-filters, applied *before* fuzzy scoring — one query instead of two. Two independently-capped queries reconciled by an LLM afterwards can silently drop a valid answer that only survives in one of them; combining filters up front makes that failure mode structurally impossible instead of prompting the model to trust one source over another. |
 | Policy checks (`verify_booking`) as explicit code predicates over catalog columns, not a rules engine and not an LLM judgment call | The policy set (referral required, location capability, new-patient eligibility, provider-location/appointment-type validity) is small, fixed, and already expressed as literal fields in `catalog.json` — a WHERE-clause-shaped check is more auditable and can't be talked out of by conversational pressure the way a prompt-based rule could. |
 | `new_patient` and `referral_on_file` are explicit, honestly-named caller-asserted inputs | There's no patient record in this dataset, so these two fields can't be independently verified. Rather than pretend otherwise, they're modeled as ordinary collected fields (same as `location_id` or `specialty`) and still enforced deterministically in `verify_booking` — the guarantee is "the rule is checked in code against what the caller stated," not "verified against a system of record." |
 | Node-graph-driven narrowing: ask before searching, retry by narrowing further rather than paging | Because the Phase 1 conversation is already a graph, depth in the graph doubles as depth in the catalog hierarchy — name and specialty are collected together, up front, before any query fires. When a search is still too broad (only reachable on the no-name browsing path), the graph asks for a genuinely different filter (location) and retries once already-narrowed, rather than fetching the next batch of the same broad list. |
@@ -156,19 +156,6 @@ that actually has imaging.
 
 **8. `confirm`.** Booking confirmed: Dr. Emily Chen, Echocardiogram, Downtown Health
 Center.
-
-### The bug this example caught, and how it was fixed
-
-The first version of this graph ran name and specialty as two separate calls:
-`resolve_provider_name("Chen")` (capped at 3, no specialty filter) followed by
-`find_providers(specialty="Cardiology")` (a separate, complete query), with a node
-instructed to reconcile the two. The first call's default cap of 3 returned only
-David, Daniel, and Wei Chen — **Dr. Emily Chen, the provider in this very example, was
-silently dropped**, and a node that only trusted overlap between the two lists could
-never recover her. The fix wasn't a better prompt telling the model which list to
-trust — it was removing the second list entirely: combining the filters into one call
-(step 2 above) makes the failure mode structurally impossible, since there is no
-longer a separate, incomplete list to have disagreed with in the first place.
 
 ## Verifying the cost/accuracy claim
 
