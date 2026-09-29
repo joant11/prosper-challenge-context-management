@@ -35,12 +35,13 @@ CATALOG_FUNCTIONS = {
 }
 
 
-def _run_catalog_call(catalog_call: dict, collected: dict, state: dict) -> dict:
+def _run_catalog_call(catalog_call: dict, state: dict) -> dict:
     """Call a real catalog.py function for a `catalog_call` node.
 
     `args` maps the function's own parameter names to the state key that holds
-    the value — checked in this turn's freshly collected fields first, then in
-    everything accumulated from earlier turns.
+    the value, looked up from everything accumulated in conversation state so
+    far (including whatever the edge that just led here collected — the
+    caller merges that into `state` before calling this).
     """
     fn_name = catalog_call.get("function")
     fn = CATALOG_FUNCTIONS.get(fn_name)
@@ -49,9 +50,7 @@ def _run_catalog_call(catalog_call: dict, collected: dict, state: dict) -> dict:
 
     kwargs = {}
     for param, state_key in catalog_call.get("args", {}).items():
-        if state_key in collected:
-            kwargs[param] = collected[state_key]
-        elif state_key in state:
+        if state_key in state:
             kwargs[param] = state[state_key]
 
     try:
@@ -96,13 +95,33 @@ class AgentBuilder:
     # ---- compilation -------------------------------------------------------
     def build_initial_node(self) -> NodeConfig:
         """Return the entry NodeConfig; downstream nodes are built lazily on transition."""
-        return self._make_node(self._nodes_by_name[self.config.initial_node])
+        return self._make_node(self._nodes_by_name[self.config.initial_node], {})
 
-    def _make_node(self, node: Node) -> NodeConfig:
+    def _make_node(self, node: Node, state: dict) -> NodeConfig:
+        # A tool_call node's real lookup fires HERE, while the node is being
+        # built to show to the model — not when one of its own edges later
+        # fires. Firing it on the edge (the previous design) meant the model
+        # was asked to "report the real results" before that data had been
+        # fetched at all, and had nothing to go on but a plausible-sounding
+        # guess — including inventing ids for its own next function call.
+        # Fetching it now, before the model ever has to say anything about
+        # this node, means the real data is already in front of it.
+        task_messages = list(node.task_messages)
+        if node.type == "tool_call" and node.catalog_call:
+            result = _run_catalog_call(node.catalog_call, state)
+            state.update(result)
+            logger.info(f"[{node.name}] real catalog_call {node.catalog_call.get('function')} -> {result}")
+            task_messages = task_messages + [
+                {
+                    "role": "developer",
+                    "content": f"Real data just retrieved from the catalog: {json.dumps(result, default=str)}",
+                }
+            ]
+
         node_config: NodeConfig = {
             "name": node.name,
             "role_message": node.role_message or self.config.persona,
-            "task_messages": node.task_messages,
+            "task_messages": task_messages,
             "functions": [self._make_edge_function(node, edge) for edge in node.edges],
         }
         if node.pre_actions:
@@ -116,15 +135,11 @@ class AgentBuilder:
 
     def _make_edge_function(self, node: Node, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
-            # Persist what the caller gave us so later nodes can use it.
-            result = dict(args)
-            if node.type == "tool_call" and node.catalog_call:
-                # Real Phase 2 lookup: call the actual catalog.py function.
-                result.update(_run_catalog_call(node.catalog_call, result, flow_manager.state))
-            flow_manager.state.update(result)
-            logger.info(f"[{edge.function}] -> {edge.target} | collected: {result}")
-            next_node = self._make_node(self._nodes_by_name[edge.target])
-            return {"status": "success", **result}, next_node
+            # Persist what the caller gave us so the next node (and beyond) can use it.
+            flow_manager.state.update(args)
+            logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
+            next_node = self._make_node(self._nodes_by_name[edge.target], flow_manager.state)
+            return {"status": "success", **args}, next_node
 
         return FlowsFunctionSchema(
             name=edge.function,

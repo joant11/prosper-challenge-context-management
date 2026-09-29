@@ -92,11 +92,13 @@ location without that capability).
 ## Node graph wiring (implemented, `backend/agent_builder/builder.py`)
 
 A node has a `catalog_call: {"function": "<name>", "args": {<param>: <state key>}}`
-field. When a `tool_call` node has it, `AgentBuilder`'s edge handler calls the real
-`catalog.py` function — pulling arguments from this turn's collected properties,
-falling back to everything accumulated earlier in the conversation — and merges the
-real result into the conversation state. No schema rework: same `tool_call` node kind
-and edge-collection mechanism Phase 1 already had.
+field. When a `tool_call` node has it, `AgentBuilder` calls the real `catalog.py`
+function **as that node is entered** — before the model is asked to say anything
+about it — pulling arguments from everything accumulated in conversation state so
+far, and injecting the real result directly into that node's own instructions as an
+additional message. No schema rework: same `tool_call` node kind and edge-collection
+mechanism Phase 1 already had; only where the call fires changed (see below — this
+wasn't the original design, it was a bug found via a real test call and fixed).
 
 The reference implementation is the **"Presentation Prosper"** agent template
 (`backend/agent_store.py`, key `phase2_demo`), a 9-node graph:
@@ -106,15 +108,49 @@ branches on whether a name was given → `lookup_by_name` (name + specialty comb
 one call) *or* `lookup_specialty` (specialty alone, with a `narrow_specialty_location`
 retry loop if that's too broad) → `lookup_appointment_type` → `ask_location` →
 `resolve_location_node` → `verify` (loops back to `ask_location` on a real policy
-rejection) → `confirm`.
+rejection) → `confirm`. A second, simpler template, **"Simple Booking Demo"**
+(`simple_linear_demo`), walks the same real functions in a strictly linear order
+(doctor → location → visit type → patient info → confirm) with no branching, useful
+as a plainer backup demo.
 
 Every lookup is a real call, not a script — verified against arbitrary real provider
 names, not just one worked example.
 
+### A real bug this surfaced: data arriving one turn too late
+
+The original design fired a node's `catalog_call` in the handler for its *outgoing*
+edge — i.e., when the model called a function to *leave* the node. But the node's own
+instructions ("report the real matches...") are shown to the model *on arrival*,
+before any of its edges have been called. The consequence: at every `tool_call` node,
+the model was asked to report real data that hadn't been fetched yet.
+
+This was caught from a real test call, not found by inspection. The transcript showed
+the model asked for "Dr. Emily Chen," and the agent replied "We have a match for Dr.
+Emily Chen" — before `resolve_provider_name` had actually run. It then called
+`choose_provider` with `provider_id: "Emily Chen"` (a name, not a real id, since it had
+never been shown one) — only *that* call finally triggered the real search, too late
+to correct what was already committed to state. The same pattern repeated at the
+location step (`location_id: "Downtown Health Center"` instead of `loc_004`) and, most
+visibly, at the appointment-type step, where the model fully invented two appointment
+types that don't exist ("a regular consultation, 30 min," "an extended consultation,
+60 min") and called `choose_appointment_type` with a fabricated id, `"reg_consult"`.
+By the time `verify_booking` ran, every id it was given was fake, and it correctly
+rejected the booking as unknown — the policy gate was never wrong; it was fed garbage
+by everything upstream of it.
+
+**Fix:** move the `catalog_call` to fire when a node is *entered* (inside `_make_node`,
+using state accumulated up to that point) instead of when one of its edges fires, and
+inject the real result into that node's instructions before the model ever has to act
+on it. Verified by driving the actual `AgentBuilder`/`FlowsFunctionSchema` handler path
+end to end afterward (not just the underlying query functions in isolation, which had
+already been passing and gave no signal that this bug existed): every `tool_call`
+node's injected data was confirmed present before the corresponding edge fired, using
+real ids throughout, reaching a real `verify_booking` `{"ok": true}` and a clean
+`confirm`.
+
 ## Worked example (real data, run end to end)
 
-This is the exact scenario that surfaced the accuracy bug described below, walked
-through with real values from `catalog.json`.
+Walked through with real values from `catalog.json`.
 
 **1. `greeting`.** Caller says: *"I'd like to see Dr. Chen, it's for a cardiology
 issue."* Both `provider_name="Chen"` and `specialty="Cardiology"` are collected
@@ -145,9 +181,13 @@ patient, and have a referral on file.
 
 **6. `verify`.** Real call:
 `verify_booking("prov_046", "loc_007", "appt_021", new_patient=False, referral_on_file=True)`
-→ `{"ok": false, "violations": ["location lacks required capability: imaging"]}` —
-Richmond Care Center genuinely doesn't have imaging. This is a real policy rejection,
-not a scripted one. The graph loops back to `ask_location`.
+→ `{"ok": false, "violations": [{"field": "location_capability", "message": "location lacks required capability: imaging"}]}` —
+Richmond Care Center genuinely doesn't have imaging. Each violation carries a `field`
+alongside its message precisely so the graph can decide what to do next (offer real
+alternative locations, versus ask about a referral) from that field, not by
+pattern-matching the English sentence. This is a real policy rejection, not a
+scripted one — the graph routes to a node that looks up and offers Dr. Chen's real
+locations instead of asking the caller to guess again.
 
 **7. Retry.** Caller says Downtown Health Center instead. `resolve_location` →
 `loc_004`. `verify_booking("prov_046", "loc_004", "appt_021", ...)` →

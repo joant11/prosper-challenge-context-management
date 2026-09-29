@@ -519,13 +519,16 @@ TEMPLATES = {
                         "content": (
                             "Report the real result plainly — this is a live policy check running in "
                             "code, not your own judgment call. If ok is true, move toward confirming the "
-                            "booking. If ok is false, read out the exact violation reasons you got back "
-                            "and say plainly that this specific combination isn't allowed. If the "
-                            "violation is about the location (wrong site for this provider, or a missing "
-                            "capability), offer to look up the real locations this provider is actually "
-                            "available at, rather than asking the caller to guess again. If instead it's "
-                            "about a referral or new-patient rule, ask about that directly — there's no "
-                            "need to look up locations for that."
+                            "booking. If ok is false, each violation has a 'field' and a 'message' — "
+                            "state every message individually and specifically, never summarize several "
+                            "into one vague 'that's not allowed'. Use the fields, not the wording, to "
+                            "decide what to do next: if any violation's field is 'provider_location' or "
+                            "'location_capability', it's a location problem — offer to look up the real "
+                            "locations this provider is actually available at, rather than asking the "
+                            "caller to guess again. If any violation's field is 'referral', "
+                            "'new_patient_appointment', or 'new_patient_provider', it's not a location "
+                            "problem — ask about that directly instead, there's no need to look up "
+                            "locations for it."
                         ),
                     }
                 ],
@@ -575,6 +578,304 @@ TEMPLATES = {
                         "content": (
                             "Confirm the booking: provider name, appointment type, and location. Thank "
                             "the caller and say goodbye."
+                        ),
+                    }
+                ],
+            },
+        ],
+    },
+    "simple_linear_demo": {
+        "name": "Simple Booking Demo",
+        "voice_id": DEFAULT_VOICE_ID,
+        "model": DEFAULT_MODEL,
+        "persona": (
+            "You are the clinic's scheduling assistant. Your responses are spoken aloud — keep "
+            "them to two or three short sentences, no lists. Every lookup you do is a real query "
+            "against the real clinic catalog, never a guess. Always use an available function to "
+            "move the conversation forward."
+        ),
+        "initial_node": "greeting",
+        "nodes": [
+            {
+                "name": "greeting",
+                "type": "collect",
+                "position": {"x": 60, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": "Greet the caller as the clinic's scheduling assistant and ask who they'd like to see, by name.",
+                    }
+                ],
+                "edges": [
+                    {
+                        "function": "search_provider",
+                        "description": "Call once the caller names a provider.",
+                        "target": "lookup_provider",
+                        "properties": {
+                            "provider_name": {
+                                "type": "string",
+                                "description": "The provider's name exactly as the caller said it.",
+                            }
+                        },
+                        "required": ["provider_name"],
+                    }
+                ],
+            },
+            {
+                "name": "lookup_provider",
+                "type": "tool_call",
+                "position": {"x": 380, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Report the real matches for that name — up to three, with their "
+                            "specialty. If none matched, say so plainly and ask them to repeat or "
+                            "spell it; never guess a name that wasn't returned. If exactly one "
+                            "matched, confirm that's who they mean. If more than one, ask which."
+                        ),
+                    }
+                ],
+                "data_refs": {},
+                "catalog_call": {"function": "resolve_provider_name", "args": {"text": "provider_name"}},
+                "edges": [
+                    {
+                        "function": "choose_provider",
+                        "description": "Call once a specific provider is chosen.",
+                        "target": "ask_location",
+                        "properties": {
+                            "provider_id": {
+                                "type": "string",
+                                "description": "The exact id of the chosen provider, copied from the real results already read out.",
+                            }
+                        },
+                        "required": ["provider_id"],
+                    }
+                ],
+            },
+            {
+                "name": "ask_location",
+                "type": "collect",
+                "position": {"x": 700, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Ask which location they'd like to see this provider at. If they don't "
+                            "know, or ask which locations this provider is even available at, look "
+                            "that up for them instead of guessing."
+                        ),
+                    }
+                ],
+                "edges": [
+                    {
+                        "function": "search_location",
+                        "description": "Call once the caller names a location.",
+                        "target": "resolve_location_node",
+                        "properties": {
+                            "location_text": {
+                                "type": "string",
+                                "description": "The location the caller named, in their own words.",
+                            }
+                        },
+                        "required": ["location_text"],
+                    },
+                    {
+                        "function": "ask_available_locations",
+                        "description": "Call if the caller wants to know which locations this provider is available at before naming one.",
+                        "target": "lookup_provider_locations",
+                        "properties": {},
+                        "required": [],
+                    },
+                ],
+            },
+            {
+                "name": "lookup_provider_locations",
+                "type": "tool_call",
+                "position": {"x": 700, "y": 420},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Start by stating the provider_name you just got back, so the caller can "
+                            "catch it if that's not who they meant. Then report the real locations "
+                            "where this provider practices — name and address for each. Ask which one "
+                            "they'd like."
+                        ),
+                    }
+                ],
+                "data_refs": {},
+                "catalog_call": {"function": "find_provider_locations", "args": {"provider_id": "provider_id"}},
+                "edges": [
+                    {
+                        "function": "location_chosen",
+                        "description": "Call once the caller picks one of the real locations just read out.",
+                        "target": "ask_location",
+                        "properties": {},
+                        "required": [],
+                    }
+                ],
+            },
+            {
+                "name": "resolve_location_node",
+                "type": "tool_call",
+                "position": {"x": 1020, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Report the real location match by name and address. If nothing matched "
+                            "well, say so and ask them to repeat."
+                        ),
+                    }
+                ],
+                "data_refs": {},
+                "catalog_call": {"function": "resolve_location", "args": {"text": "location_text"}},
+                "edges": [
+                    {
+                        "function": "location_confirmed",
+                        "description": "Call once a location match is confirmed.",
+                        "target": "lookup_appointment_type",
+                        "properties": {
+                            "location_id": {
+                                "type": "string",
+                                "description": "The id of the matched location, copied from the real result just read out.",
+                            }
+                        },
+                        "required": ["location_id"],
+                    }
+                ],
+            },
+            {
+                "name": "lookup_appointment_type",
+                "type": "tool_call",
+                "position": {"x": 1340, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Report the real appointment types this provider offers — name and "
+                            "duration in minutes. Ask which one they'd like."
+                        ),
+                    }
+                ],
+                "data_refs": {},
+                "catalog_call": {"function": "find_appointment_types", "args": {"provider_id": "provider_id"}},
+                "edges": [
+                    {
+                        "function": "choose_appointment_type",
+                        "description": "Call once an appointment type is chosen.",
+                        "target": "ask_patient_info",
+                        "properties": {
+                            "appointment_type_id": {
+                                "type": "string",
+                                "description": "The id of the chosen appointment type, copied from the real results just read out.",
+                            }
+                        },
+                        "required": ["appointment_type_id"],
+                    }
+                ],
+            },
+            {
+                "name": "ask_patient_info",
+                "type": "collect",
+                "position": {"x": 1660, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Ask whether they're a new or existing patient, and whether they have a "
+                            "referral on file."
+                        ),
+                    }
+                ],
+                "edges": [
+                    {
+                        "function": "confirm_patient_info",
+                        "description": "Call once patient status is known.",
+                        "target": "verify",
+                        "properties": {
+                            "new_patient": {
+                                "type": "boolean",
+                                "description": "True if the caller is a new patient.",
+                            },
+                            "referral_on_file": {
+                                "type": "boolean",
+                                "description": "True if the caller says they have a referral on file. Default false if not mentioned.",
+                            },
+                        },
+                        "required": ["new_patient"],
+                    }
+                ],
+            },
+            {
+                "name": "verify",
+                "type": "tool_call",
+                "position": {"x": 1980, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Report the real result plainly — this is a live policy check running in "
+                            "code, not your own judgment call. If ok is true, move toward confirming "
+                            "the booking. If ok is false, each violation has a 'field' and a 'message' "
+                            "— state every message individually and specifically, never summarize "
+                            "several into one vague 'that's not allowed'. Use the fields, not the "
+                            "wording, to decide what to do next: if any violation's field is "
+                            "'provider_location' or 'location_capability', it's a location problem — "
+                            "offer to look up the real locations this provider is actually available "
+                            "at. If any violation's field is 'referral', 'new_patient_appointment', or "
+                            "'new_patient_provider', it's not a location problem — ask about that "
+                            "directly instead."
+                        ),
+                    }
+                ],
+                "data_refs": {},
+                "catalog_call": {
+                    "function": "verify_booking",
+                    "args": {
+                        "provider_id": "provider_id",
+                        "location_id": "location_id",
+                        "appointment_type_id": "appointment_type_id",
+                        "new_patient": "new_patient",
+                        "referral_on_file": "referral_on_file",
+                    },
+                },
+                "edges": [
+                    {
+                        "function": "book_confirmed",
+                        "description": "Call once the check passed (ok: true) and the caller is ready to confirm.",
+                        "target": "confirm",
+                        "properties": {},
+                        "required": [],
+                    },
+                    {
+                        "function": "retry_location",
+                        "description": "Call if the check failed because of the location (wrong site or missing capability), to show the caller where this provider is actually available.",
+                        "target": "lookup_provider_locations",
+                        "properties": {},
+                        "required": [],
+                    },
+                    {
+                        "function": "retry_patient_info",
+                        "description": "Call if the check failed because of referral or new-patient status, not location.",
+                        "target": "ask_patient_info",
+                        "properties": {},
+                        "required": [],
+                    },
+                ],
+            },
+            {
+                "name": "confirm",
+                "type": "end",
+                "end": True,
+                "position": {"x": 2300, "y": 260},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Confirm the booking: provider name, appointment type, and location. "
+                            "Thank the caller and say goodbye."
                         ),
                     }
                 ],

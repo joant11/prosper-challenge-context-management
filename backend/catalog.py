@@ -339,7 +339,13 @@ def verify_booking(
     """The final hard gate before confirming a booking. Every check here is a
     direct comparison against catalog.json fields, except `referral_on_file`
     and `new_patient`, which are caller-asserted (there is no patient record
-    in this dataset) rather than independently verified."""
+    in this dataset) rather than independently verified.
+
+    Each violation carries a `field` alongside its human-readable `message` —
+    not for display, but so the caller (the graph) can decide what to do next
+    from real data (which category failed) instead of pattern-matching the
+    English sentence to guess whether it was a location problem, a referral
+    problem, or something else."""
     conn = conn or get_connection()
     violations = []
 
@@ -353,21 +359,30 @@ def verify_booking(
         "SELECT * FROM locations WHERE id = ?", (location_id,)
     ).fetchone()
     if not provider or not appt or not location:
-        return {"ok": False, "violations": ["unknown provider, location, or appointment type"]}
+        return {
+            "ok": False,
+            "violations": [{"field": "unknown", "message": "unknown provider, location, or appointment type"}],
+        }
 
     provider_at_location = conn.execute(
         "SELECT 1 FROM provider_locations WHERE provider_id = ? AND location_id = ?",
         (provider_id, location_id),
     ).fetchone()
     if not provider_at_location:
-        violations.append("provider does not practice at the chosen location")
+        violations.append({
+            "field": "provider_location",
+            "message": "provider does not practice at the chosen location",
+        })
 
     provider_offers_type = conn.execute(
         "SELECT 1 FROM provider_appointment_types WHERE provider_id = ? AND appointment_type_id = ?",
         (provider_id, appointment_type_id),
     ).fetchone()
     if not provider_offers_type:
-        violations.append("provider does not offer this appointment type")
+        violations.append({
+            "field": "provider_appointment_type",
+            "message": "provider does not offer this appointment type",
+        })
 
     if appt["required_capability"]:
         location_has_capability = conn.execute(
@@ -375,17 +390,27 @@ def verify_booking(
             (location_id, appt["required_capability"]),
         ).fetchone()
         if not location_has_capability:
-            violations.append(
-                f"location lacks required capability: {appt['required_capability']}"
-            )
+            violations.append({
+                "field": "location_capability",
+                "message": f"location lacks required capability: {appt['required_capability']}",
+            })
 
     if appt["requires_referral"] and not referral_on_file:
-        violations.append("appointment type requires a referral on file")
+        violations.append({
+            "field": "referral",
+            "message": "appointment type requires a referral on file",
+        })
 
     if new_patient and not appt["new_patients_allowed"]:
-        violations.append("appointment type is not available to new patients")
+        violations.append({
+            "field": "new_patient_appointment",
+            "message": "appointment type is not available to new patients",
+        })
 
     if new_patient and not provider["accepting_new_patients"]:
-        violations.append("provider is not accepting new patients")
+        violations.append({
+            "field": "new_patient_provider",
+            "message": "provider is not accepting new patients",
+        })
 
     return {"ok": not violations, "violations": violations}
