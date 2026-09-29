@@ -224,6 +224,36 @@ def find_appointment_types(
     return rows
 
 
+def find_provider_locations(provider_id: str, conn: Optional[sqlite3.Connection] = None) -> dict:
+    """Every real location a specific provider practices at — the reverse of
+    find_providers(location_id=...). Lets the graph tell a caller where a
+    provider actually is instead of asking them to guess again after a
+    rejection, or before they've named a location at all.
+
+    Also returns the provider's own name alongside the locations. This isn't
+    for display convenience — it's a check: the caller-facing node states this
+    name back before listing locations, so if the wrong provider_id was ever
+    carried forward from an earlier turn (e.g. the LLM copied the wrong id out
+    of a candidate list), the mismatch between the name spoken here and the
+    name the caller actually asked for becomes audible immediately, instead of
+    silently returning a different real provider's locations."""
+    conn = conn or get_connection()
+    provider = conn.execute(
+        "SELECT name FROM providers WHERE id = ?", (provider_id,)
+    ).fetchone()
+    sql = (
+        "SELECT DISTINCT locations.* FROM locations "
+        "JOIN provider_locations pl ON pl.location_id = locations.id "
+        "WHERE pl.provider_id = ?"
+    )
+    rows = _rows(conn.execute(sql, (provider_id,)))
+    if len(rows) > MAX_RESULTS:
+        # No further filter to suggest here — a single provider practicing at
+        # more than MAX_RESULTS locations would be a data problem, not a query one.
+        raise TooManyResultsError(len(rows), "this provider's location list is unexpectedly large")
+    return {"provider_name": provider["name"] if provider else None, "locations": rows}
+
+
 def list_specialties(conn: Optional[sqlite3.Connection] = None) -> list[str]:
     """The enum of specialties that actually exist in the catalog — for the
     complaint -> specialty classifier to constrain its output to, instead of

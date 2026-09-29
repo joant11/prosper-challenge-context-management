@@ -29,6 +29,7 @@ CATALOG_FUNCTIONS = {
     "resolve_location": catalog.resolve_location,
     "find_providers": catalog.find_providers,
     "find_appointment_types": catalog.find_appointment_types,
+    "find_provider_locations": catalog.find_provider_locations,
     "list_specialties": catalog.list_specialties,
     "verify_booking": catalog.verify_booking,
 }

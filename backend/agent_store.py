@@ -252,10 +252,12 @@ TEMPLATES = {
                         "content": (
                             "You just ran a real search already filtered by both the name and the "
                             "specialty in one query — everything you see genuinely matches both, so "
-                            "there's nothing else to cross-check. State how many matched and name them. "
-                            "If exactly one, confirm that's who they mean. If more than one shares the "
-                            "name, ask which. If nobody matched at all, say so honestly and ask if they'd "
-                            "like to see who's available in this specialty instead, without a name filter."
+                            "there's nothing else to cross-check. List every candidate you got back by "
+                            "name and specialty — don't state a count first, just name them, since "
+                            "listing them all is what matters, not announcing a number. If there's "
+                            "exactly one, confirm that's who they mean. If there's more than one, ask "
+                            "which. If nobody matched at all, say so honestly and ask if they'd like to "
+                            "see who's available in this specialty instead, without a name filter."
                         ),
                     }
                 ],
@@ -407,9 +409,13 @@ TEMPLATES = {
                     {
                         "role": "developer",
                         "content": (
-                            "Ask which location the caller prefers, and naturally work in whether "
-                            "they're a new or existing patient, and whether they have a referral on "
-                            "file — don't make it sound like a form."
+                            "If the caller already named a location earlier in this call (for example "
+                            "while narrowing the specialty search), don't ask for it again — just "
+                            "confirm you'll use that same one, and only ask about new/existing patient "
+                            "status and whether they have a referral on file. Otherwise, ask which "
+                            "location they prefer along with that same patient info, naturally, not "
+                            "like a form. If the caller asks which locations this provider is even "
+                            "available at, look that up for them instead of guessing."
                         ),
                     }
                 ],
@@ -433,6 +439,42 @@ TEMPLATES = {
                             },
                         },
                         "required": ["location_text", "new_patient"],
+                    },
+                    {
+                        "function": "ask_available_locations",
+                        "description": "Call if the caller wants to know which locations this provider is available at before naming one.",
+                        "target": "lookup_provider_locations",
+                        "properties": {},
+                        "required": [],
+                    },
+                ],
+            },
+            {
+                "name": "lookup_provider_locations",
+                "type": "tool_call",
+                "position": {"x": 1340, "y": 420},
+                "task_messages": [
+                    {
+                        "role": "developer",
+                        "content": (
+                            "Start by stating the provider_name you just got back (e.g. 'for Dr. Emily "
+                            "Chen'), so the caller can catch it immediately if that's not who they meant "
+                            "— never silently substitute a different provider. Then report the real "
+                            "locations — name and address for each. Ask the caller which one they'd "
+                            "like, along with whether they're a new or existing patient and whether "
+                            "they have a referral on file."
+                        ),
+                    }
+                ],
+                "data_refs": {},
+                "catalog_call": {"function": "find_provider_locations", "args": {"provider_id": "provider_id"}},
+                "edges": [
+                    {
+                        "function": "location_chosen",
+                        "description": "Call once the caller picks one of the real locations just read out.",
+                        "target": "ask_location",
+                        "properties": {},
+                        "required": [],
                     }
                 ],
             },
@@ -477,10 +519,13 @@ TEMPLATES = {
                         "content": (
                             "Report the real result plainly — this is a live policy check running in "
                             "code, not your own judgment call. If ok is true, move toward confirming the "
-                            "booking. If ok is false, read out the exact violation reasons you got back, "
-                            "say plainly that this specific combination isn't allowed, and ask if they'd "
-                            "like to try a different location, or address whatever the violation named "
-                            "(e.g. a referral or new-patient rule)."
+                            "booking. If ok is false, read out the exact violation reasons you got back "
+                            "and say plainly that this specific combination isn't allowed. If the "
+                            "violation is about the location (wrong site for this provider, or a missing "
+                            "capability), offer to look up the real locations this provider is actually "
+                            "available at, rather than asking the caller to guess again. If instead it's "
+                            "about a referral or new-patient rule, ask about that directly — there's no "
+                            "need to look up locations for that."
                         ),
                     }
                 ],
@@ -505,7 +550,14 @@ TEMPLATES = {
                     },
                     {
                         "function": "retry_location",
-                        "description": "Call if the check failed (ok: false) and the caller wants to try a different location.",
+                        "description": "Call if the check failed (ok: false) because of the location (wrong site for this provider, or missing a required capability), to show the caller where this provider is actually available.",
+                        "target": "lookup_provider_locations",
+                        "properties": {},
+                        "required": [],
+                    },
+                    {
+                        "function": "retry_patient_info",
+                        "description": "Call if the check failed (ok: false) because of referral or new-patient status, not location — no need to look up locations again.",
                         "target": "ask_location",
                         "properties": {},
                         "required": [],
